@@ -60,21 +60,13 @@ function Read-Ini {
     return $ini
 }
 
-function Test-Internet {
-    param([string]$Target)
-    try {
-        $r = Test-Connection -ComputerName $Target -Count 2 -Quiet -ErrorAction Stop
-        return [bool]$r
-    } catch {
-        return $false
-    }
-}
-
-function Get-CaptiveRedirect {
+function Http-Probe {
     <#
-        访问 CaptiveUrl，不跟随重定向，返回 302 的 Location 头（portal.do 完整 URL）。
-        如果返回 200（已认证，直接能上网）则返回 $null。
-        如果连接失败（WiFi 都没连上）则返回 $null 并抛错。
+        对单个 URL 做 HTTP 探测（不跟随重定向）。
+        返回 @{Status='ok'|'redirect'|'fail'; Location='跳转地址'}
+        - ok: 返回 2xx（能正常访问）
+        - redirect: 返回 3xx，Location 为跳转地址（可能被 BRAS 劫持到认证页）
+        - fail: 连接失败（无网络）
     #>
     param([string]$Url)
     try {
@@ -84,21 +76,54 @@ function Get-CaptiveRedirect {
         $req.Timeout = 8000
         $req.Proxy = $null
         $resp = $req.GetResponse()
-        # 200 说明直接通了，不需要认证
+        $code = [int]$resp.StatusCode
         $resp.Close()
-        return $null
+        if ($code -ge 200 -and $code -lt 300) {
+            return @{ Status = 'ok'; Location = '' }
+        }
+        return @{ Status = 'redirect'; Location = '' }
     } catch [System.Net.WebException] {
         $resp = $_.Exception.Response
         if ($resp) {
-            $sc = [int]$resp.StatusCode
-            if ($sc -eq 301 -or $sc -eq 302 -or $sc -eq 303 -or $sc -eq 307 -or $sc -eq 308) {
+            $code = [int]$resp.StatusCode
+            if ($code -ge 300 -and $code -lt 400) {
                 $loc = $resp.Headers['Location']
                 $resp.Close()
-                return $loc
+                return @{ Status = 'redirect'; Location = $loc }
             }
+            $resp.Close()
         }
-        throw
+        return @{ Status = 'fail'; Location = '' }
+    } catch {
+        return @{ Status = 'fail'; Location = '' }
     }
+}
+
+function Get-NetworkStatus {
+    <#
+        判断当前网络状态。
+        返回 @{Status='online'|'captive'|'offline'; PortalUrl='认证入口URL'}
+        - online: 能正常访问外网（HTTP 200，或跳转但目标不是认证页）
+        - captive: HTTP 被 BRAS 重定向到认证页（portal），需要认证
+        - offline: 连接失败，无网络
+    #>
+    param([string]$CaptiveUrl, [string]$FallbackUrl)
+    foreach ($url in @($CaptiveUrl, $FallbackUrl)) {
+        if (-not $url) { continue }
+        $r = Http-Probe -Url $url
+        if ($r.Status -eq 'ok') {
+            return @{ Status = 'online'; PortalUrl = '' }
+        }
+        if ($r.Status -eq 'redirect') {
+            if ($r.Location -match 'portal|10\.101\.|login|auth') {
+                return @{ Status = 'captive'; PortalUrl = $r.Location }
+            }
+            # 跳转但非认证页（如 http→https 正常跳转），说明能上网
+            return @{ Status = 'online'; PortalUrl = '' }
+        }
+        # fail: 尝试下一个探测地址
+    }
+    return @{ Status = 'offline'; PortalUrl = '' }
 }
 
 function Get-QueryParams {
@@ -174,14 +199,17 @@ try {
     $quickAuth  = $cfg['Network']['QuickAuthPath']
     $retryWait  = [int]$cfg['Settings']['RetryInterval']
     $maxRetries = [int]$cfg['Settings']['MaxRetries']
+    $fallback   = $cfg['Network']['FallbackUrl']
 
     if ($password -eq 'YOUR_PASSWORD_HERE' -or [string]::IsNullOrWhiteSpace($password)) {
         Write-Log "密码仍为占位符，请先编辑 config.ini 填入真实校园网密码" 'ERROR'
         exit 2
     }
 
-    # 1. 先检测外网
-    if (Test-Internet -Target $pingHost) {
+    # 1. HTTP 探测判断网络状态（ping 不可靠：校园网 BRAS 放行 ICMP 但拦截 HTTP，ping 通不代表已认证）
+    $ns = Get-NetworkStatus -CaptiveUrl $captive -FallbackUrl $fallback
+
+    if ($ns.Status -eq 'online') {
         # 在线。为了不刷爆日志，30 分钟写一次心跳
         $heartbeatFile = Join-Path $env:TEMP 'campus_heartbeat.ts'
         $now = [DateTime]::Now
@@ -193,45 +221,23 @@ try {
             }
         }
         if ($shouldLog) {
-            Write-Log "外网可达（ping $pingHost 通），无需认证。"
+            Write-Log "外网可达（HTTP 探测通过），无需认证。"
             $now.ToString('o') | Set-Content -LiteralPath $heartbeatFile -Encoding UTF8
         }
         exit 0
     }
 
-    Write-Log "外网不通（ping $pingHost 失败），开始尝试 Portal 重认证..."
-
-    # 2. 捕获 captive portal 跳转
-    $portalUrl = $null
-    try {
-        $portalUrl = Get-CaptiveRedirect -Url $captive
-    } catch {
-        Write-Log "访问 $captive 失败（WiFi 可能未连接）: $($_.Exception.Message)" 'WARN'
+    if ($ns.Status -eq 'offline') {
+        Write-Log "HTTP 探测失败，疑似无网络连接（WiFi 未连接或 DHCP 未完成）。ping $pingHost 辅助结果: $([bool](Test-Connection -ComputerName $pingHost -Count 1 -Quiet -ErrorAction SilentlyContinue))。本次退出，等待下次任务。" 'WARN'
         exit 0
     }
 
-    if (-not $portalUrl) {
-        Write-Log "访问 $captive 返回 200 无跳转，但 ping 不通——可能是 DNS/ICMP 被拦，再试一次 HTTP。"
-        # 再给一次机会：直接试访问外网 HTTP
-        try {
-            $probe = [System.Net.HttpWebRequest]::Create('http://www.baidu.com')
-            $probe.Method = 'GET'; $probe.Timeout = 8000; $probe.Proxy = $null
-            $probe.GetResponse().Close()
-            Write-Log "HTTP 探测 baidu 成功，判定为已在线。"
-            exit 0
-        } catch {
-            Write-Log "HTTP 探测也失败，继续走认证流程。"
-        }
-    }
-
-    if (-not $portalUrl) {
-        Write-Log "未捕获到 Portal 跳转，本次退出等待下次任务。" 'WARN'
-        exit 0
-    }
-
+    # captive：未认证，HTTP 被重定向到认证页
+    Write-Log "检测到未认证（HTTP 被重定向到 Portal），开始自动认证..."
+    $portalUrl = $ns.PortalUrl
     Write-Log "捕获到 Portal 跳转: $portalUrl"
 
-    # 3. 从跳转 URL 解析参数
+    # 3. 从跳转 URL 解析参数（wlanuserip/wlanacname/mac/vlan 等）
     $params = Get-QueryParams -Url $portalUrl
     # 补充认证参数
     $params['userid'] = $username + $suffix
@@ -259,12 +265,13 @@ try {
         exit 3
     }
 
-    # 5. 认证后稍等再 ping 验证
+    # 5. 认证后验证
     Start-Sleep -Seconds 3
-    if (Test-Internet -Target $pingHost) {
+    $verify = Get-NetworkStatus -CaptiveUrl $captive -FallbackUrl $fallback
+    if ($verify.Status -eq 'online') {
         Write-Log "认证后外网恢复，任务完成。"
     } else {
-        Write-Log "认证返回成功但 ping 仍不通，可能需要更长时间生效，下次任务再验证。" 'WARN'
+        Write-Log "认证返回成功但 HTTP 探测仍不通（$($verify.Status)），可能需要更长时间生效，下次任务再验证。" 'WARN'
     }
     exit 0
 
