@@ -93,7 +93,7 @@ Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -T
 4. 等 10 秒，**重新连接 `HTU_Student`**（连的时候看清 SSID，别连成手机热点）
 5. 观察日志，**1 分钟内**应依次出现：
    ```
-   [INFO] 外网不通（ping 223.5.5.5 失败），开始尝试 Portal 重认证...
+   [INFO] 检测到未认证（HTTP 被劫持到认证页），开始自动认证...
    [INFO] 捕获到 Portal 跳转: http://10.101.2.194:6060/portal.do?...
    [INFO] 第 1/3 次提交 quickauth.do ...
    [INFO] 认证成功！message=...
@@ -119,6 +119,11 @@ Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -T
 - 浏览器能正常打开网页
 - 远端设备 GameViewer 能连上电脑
 
+- 校园网未认证时有**两种劫持方式**：301 跳转到认证页，或直接返回 200+认证页 HTML（深澜透明劫持）。脚本对两种都识别——只要探测响应里出现 portal.do/quickauth/wlanuserip 特征，就判定未认证并自动提交。你可以先跑回归测试确认探测逻辑正常：
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File E:\06DateClass\20261017-自动连接校园网\scripts\tests\test_captive_detection.ps1
+  ```
+  预期输出：`7 通过, 0 失败`
 ### 注意事项
 
 - 日志在线时 30 分钟才写一条心跳（防刷屏），**只有断网瞬间才写详细日志**，所以盯日志要在"断开 WiFi 后立刻"看
