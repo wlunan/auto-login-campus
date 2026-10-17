@@ -73,6 +73,16 @@ cd E:\06DateClass\20261017-自动连接校园网\scripts
 Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -Tail 20 -Wait
 ```
 
+### 4. 可调配置（改 `scripts\config.ini`，改完下一分钟自动生效，无需重装）
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `ProbeIntervalMinutes` | `1` | 探测间隔（分钟）。`1`=每分钟，`5`=每5分钟，`0`=任务每次触发都探测 |
+| `LogMode` | `normal` | `normal`=每次探测写一条日志；`heartbeat`=在线时按心跳间隔写（防刷屏） |
+| `HeartbeatMinutes` | `30` | 仅 heartbeat 模式生效：在线时多少分钟写一条心跳 |
+| `RetryInterval` / `MaxRetries` | `5` / `3` | 单次认证失败后的重试间隔（秒）与最多重试次数 |
+
+> 说明：任务计划本身保持每 1 分钟触发一次，脚本读 `ProbeIntervalMinutes` 自行节流——未到间隔的运行会静默跳过，不占资源。
 ## 测试验收（怎么测）
 
 > ⚠️ **最重要前提：测试时电脑必须连的是校园网 `HTU_Student`，绝不能是手机热点！**
