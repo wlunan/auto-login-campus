@@ -1,0 +1,15 @@
+# 日志
+logs/*.log
+logs/
+
+# 临时文件
+*.tmp
+*.log
+heartbeat.ts
+
+# 配置（包含密码，不提交）
+scripts/config.ini
+
+# 系统文件
+Thumbs.db
+Desktop.ini
