@@ -22,6 +22,15 @@ function Write-Install {
     try { Add-Content -LiteralPath $installLog -Value $line -Encoding UTF8 -ErrorAction Stop } catch {}
 }
 
+# 前置检查：注册 SYSTEM 任务必须管理员，否则只会拿到 access denied 原始报错
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$isAdmin = (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host '需要管理员权限。请右键「以管理员身份运行」PowerShell 后再执行本脚本，' -ForegroundColor Red
+    Write-Host '或直接双击 scripts\run_install_admin.bat（会自动提权）。' -ForegroundColor Yellow
+    exit 1
+}
+
 if (-not (Test-Path -LiteralPath $mainScript)) {
     Write-Install "找不到主脚本: $mainScript"
     exit 1

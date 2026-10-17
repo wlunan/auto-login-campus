@@ -9,6 +9,7 @@ heartbeat.ts
 
 # 配置（包含密码，不提交）
 scripts/config.ini
+scripts/config.test.ini
 
 # 系统文件
 Thumbs.db

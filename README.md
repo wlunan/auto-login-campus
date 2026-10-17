@@ -16,9 +16,9 @@
 
 1. **GameViewer 远程服务**已配置为 LocalSystem 自动启动（现状），Windows 账号无密码开机自动登录，保证网络通了就能被远程连上。
 2. **自动认证脚本** `scripts/auto_login.ps1`：
-   - 每 1 分钟 ping 223.5.5.5 检测外网
-   - 不通时自动捕获 Portal 跳转，向 `http://10.101.2.194:6060/quickauth.do` 提交账号密码
-   - 失败重试、写日志、绕开系统代理
+   - 每 1 分钟 HTTP 探测外网（`1.1.1.1`，**不用 ping**：BRAS 放行 ICMP 但拦截 HTTP，ping 通不代表已认证）
+   - 被劫持时自动捕获 Portal 跳转，向 `http://10.101.2.194:6060/quickauth.do` 提交账号密码
+   - 失败重试、写日志、绕开系统代理、日志超 5MB 自动归档
 3. **Windows 任务计划** `CampusAutoLogin`（当前启用方案）：
    - 主体 SYSTEM，开机后 30 秒启动，每 1 分钟执行一次
    - 不依赖用户登录
@@ -75,14 +75,16 @@ Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -T
 
 ### 4. 可调配置（改 `scripts\config.ini`，改完下一分钟自动生效，无需重装）
 
-| 配置项 | 默认 | 说明 |
-|---|---|---|
-| `ProbeIntervalMinutes` | `1` | 探测间隔（分钟）。`1`=每分钟，`5`=每5分钟，`0`=任务每次触发都探测 |
-| `LogMode` | `normal` | `normal`=每次探测写一条日志；`heartbeat`=在线时按心跳间隔写（防刷屏） |
-| `HeartbeatMinutes` | `30` | 仅 heartbeat 模式生效：在线时多少分钟写一条心跳 |
-| `RetryInterval` / `MaxRetries` | `5` / `3` | 单次认证失败后的重试间隔（秒）与最多重试次数 |
+| 配置项                             | 默认          | 说明                                                                      |
+| ---------------------------------- | ------------- | ------------------------------------------------------------------------- |
+| `ProbeIntervalMinutes`           | `1`         | 探测间隔（分钟）。`1`=每分钟，`5`=每5分钟，`0`=任务每次触发都探测   |
+| `LogMode`                        | `normal`    | `normal`=每次探测写一条日志；`heartbeat`=在线时按心跳间隔写（防刷屏） |
+| `HeartbeatMinutes`               | `30`        | 仅 heartbeat 模式生效：在线时多少分钟写一条心跳                           |
+| `RetryInterval` / `MaxRetries` | `5` / `3` | 单次认证失败后的重试间隔（秒）与最多重试次数                              |
+| `Ssid`（`[Network]`）           | `HTU_Student` | 提交认证时上报的 SSID，换校区/换 SSID 时改这里，无需改代码              |
 
 > 说明：任务计划本身保持每 1 分钟触发一次，脚本读 `ProbeIntervalMinutes` 自行节流——未到间隔的运行会静默跳过，不占资源。
+
 ## 测试验收（怎么测）
 
 > ⚠️ **最重要前提：测试时电脑必须连的是校园网 `HTU_Student`，绝不能是手机热点！**
@@ -125,20 +127,97 @@ Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -T
 2. 或等校园网自然踢下线
 3. 观察日志是否 1 分钟内自动重新认证
 
+### 场景 4：手动主动执行（不用等任务计划）
+
+脚本不依赖任务计划，可以随时手工跑一次。典型用途：**Wi-Fi 已连上 `HTU_Student` 但尚未认证**，想立刻验证一次真实登录，不必断开重连或干等 1 分钟。
+
+```powershell
+cd E:\06DateClass\20261017-自动连接校园网\scripts
+powershell -NoProfile -ExecutionPolicy Bypass -File .\auto_login.ps1
+"exit=$LASTEXITCODE"
+Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -Tail 30
+```
+
+⚠️ **必须用 `-File` 方式运行**，不要复制代码粘贴到控制台、也不要点号加载（`. .\auto_login.ps1`）。脚本靠 `$PSScriptRoot` 定位 `config.ini` 和日志目录，只有 `-File` 才会正确赋值；点号加载会直接执行整个主流程。
+
+#### 手动跑"看起来没反应"的三个正常原因
+
+1. **脚本从不往控制台打印** —— 全文只有 `Write-Log` 写文件，终端空白是正常的，必须看日志文件。
+2. **可能被探测节流静默跳过**（`ProbeIntervalMinutes=1`）—— 跳过时不写任何日志、直接 `exit 0`。
+3. **`exit 0` 有歧义** —— 既表示"认证成功"，也表示"本来就在线""无网络提前退出""被节流跳过"。
+
+第 2 点补充：SYSTEM 任务的戳在 `C:\Windows\Temp`，你手动跑用的是 `C:\Users\<你>\AppData\Local\Temp`，**两套互不干扰**，所以任务计划刚跑过不会挡住你测试；但你自己连续跑两次，第二次会被上一次挡住。保险起见先清一次：
+
+```powershell
+Remove-Item "$env:TEMP\campus_probe.ts","$env:TEMP\campus_heartbeat.ts" -Force -ErrorAction SilentlyContinue
+```
+
+真正有区分度的是其余退出码：
+
+| 退出码 | 含义                                       |
+| ------ | ------------------------------------------ |
+| `0`  | 在线无需认证 / 认证成功 / offline 提前退出 |
+| `1`  | `config.ini` 不存在或缺少 `[Network]` 必填项 |
+| `2`  | 密码仍是 `YOUR_PASSWORD_HERE` 占位符     |
+| `3`  | 认证失败（重试次数耗尽）                   |
+| `99` | 未处理异常                                 |
+
+判断成功应以日志出现 `认证成功！message=...` 为准，不能只看退出码。
+
+#### 只测探测判定、不提交认证
+
+想先确认"能不能正确识别出被劫持"，而不想真的登进去。注意**不能点号加载**（会执行主流程），正确做法是从源码里只提取函数定义：
+
+```powershell
+$p = 'E:\06DateClass\20261017-自动连接校园网\scripts\auto_login.ps1'
+$t = $null; $e = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($p, [ref]$t, [ref]$e)
+$ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+    ForEach-Object { Invoke-Expression $_.Extent.Text }
+
+Get-NetworkStatus -CaptiveUrl 'http://1.1.1.1' -FallbackUrl 'http://www.msftconnecttest.com/connecttest.txt'
+Http-Probe -Url 'http://1.1.1.1'
+```
+
+未认证状态下应返回 `Status = captive`，且 `PortalUrl` 是那串 `portal.do?wlanuserip=...`。这一步验证的是最脆弱的部分（劫持识别 + URL 提取），且完全不碰账号密码。
+
+#### 测失败路径（不动真实配置）
+
+用 `-ConfigPath` 指向一份密码故意写错的副本，可完整验证"重试 3 次 → 写 WARN → `exit 3`"的链路（约 15 秒）：
+
+```powershell
+Copy-Item .\config.ini .\config.test.ini
+# 把 config.test.ini 里的 Password 改成错的
+powershell -NoProfile -ExecutionPolicy Bypass -File .\auto_login.ps1 -ConfigPath .\config.test.ini
+```
+
+测完删除 `config.test.ini`，避免误提交。
+
+> 手动执行是安全的：不会重新注册任务计划、不改任何系统状态。唯一副作用是认证成功后会写一次 `$probeStamp`，最多让 SYSTEM 任务下次触发延后 1 分钟，无害。
+> 但手动跑成功只证明协议链路通，**不等于 SYSTEM 上下文也通**。最终验收仍应执行下面这条，再核对日志：
+>
+> ```powershell
+> Start-ScheduledTask -TaskName CampusAutoLogin   # 需管理员
+> ```
+
 ### 判断标准（三个都满足 = 通过）
 
 - 日志出现 `认证成功！`
 - 浏览器能正常打开网页
 - 远端设备 GameViewer 能连上电脑
 
-- 校园网未认证时有**两种劫持方式**：301 跳转到认证页，或直接返回 200+认证页 HTML（深澜透明劫持）。脚本对两种都识别——只要探测响应里出现 portal.do/quickauth/wlanuserip 特征，就判定未认证并自动提交。你可以先跑回归测试确认探测逻辑正常：
-  ```powershell
-  powershell -ExecutionPolicy Bypass -File E:\06DateClass\20261017-自动连接校园网\scripts\tests\test_captive_detection.ps1
-  ```
-  预期输出：`7 通过, 0 失败`
+校园网未认证时有**两类劫持表现**：3xx 跳转到认证页，或直接返回 200/403 + 认证页 HTML（深澜透明劫持；部分 BRAS 用 403 承载认证页）。脚本对两类都识别——只要响应里出现 `portal.do` / `quickauth` / `wlanuserip` 特征，就判定未认证并自动提交；若提不出参数，会主动 GET `portal.do` 兜底，拿不到必要参数则明确报错而不是硬提交。可先跑回归测试确认探测逻辑正常：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File E:\06DateClass\20261017-自动连接校园网\scripts\tests\test_captive_detection.ps1
+```
+
+预期输出：`11 通过, 0 失败`
+
 ### 注意事项
 
-- 日志在线时 30 分钟才写一条心跳（防刷屏），**只有断网瞬间才写详细日志**，所以盯日志要在"断开 WiFi 后立刻"看
+- 日志在 `LogMode=heartbeat` 下在线时 30 分钟才写一条心跳（防刷屏），默认 `normal` 每次探测都写一条；**断网瞬间一定会写详细日志**，所以盯日志要在"断开 WiFi 后立刻"看
+- 日志超过 5MB 会自动归档为 `auto_login.log.1`（只保留一份历史），不用担心长期运行把日志撑爆
 - 断开重连后若拿到新 IP（DHCP 重新分配），属正常，脚本会从 302 跳转动态获取新 IP
 - 如果日志 1 分钟内没动静，先确认任务计划在跑：
   ```powershell

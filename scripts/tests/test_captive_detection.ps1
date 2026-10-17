@@ -59,6 +59,22 @@ $job = Start-Job -ArgumentList 'http://127.0.0.1:8899/', $readyFile {
             $ctx.Response.ContentType = 'text/html'
             $ctx.Response.ContentLength64 = $bytes.Length
             $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+        } elseif ($path -eq '/forbidden') {
+            # 模拟 C: 403 + 认证页 HTML（部分 BRAS 用 403 承载劫持页）
+            $html = '<html><body><script>window.location.href="http://10.101.2.194:6060/portal.do?wlanuserip=10.104.0.10&wlanacname=HSD-BRAS-2";</script></body></html>'
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($html)
+            $ctx.Response.StatusCode = 403
+            $ctx.Response.ContentType = 'text/html'
+            $ctx.Response.ContentLength64 = $bytes.Length
+            $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+        } elseif ($path -eq '/forbidden-plain') {
+            # 403 且无认证页特征：判定不出是否劫持，按 fail 处理
+            $html = '<html><body>forbidden</body></html>'
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($html)
+            $ctx.Response.StatusCode = 403
+            $ctx.Response.ContentType = 'text/html'
+            $ctx.Response.ContentLength64 = $bytes.Length
+            $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
         } else {
             $ctx.Response.StatusCode = 404
         }
@@ -111,6 +127,21 @@ Check "Get-NetworkStatus 返回 captive (实际: $($ns.Status))" ($ns.Status -eq
 # 用例6: 全 fail → offline
 $ns2 = Get-NetworkStatus -CaptiveUrl 'http://127.0.0.1:8898/' -FallbackUrl 'http://127.0.0.1:8897/'
 Check "全部失败 返回 offline (实际: $($ns2.Status))" ($ns2.Status -eq 'offline')
+
+# 用例7: 403 + 认证页 HTML → captive（修复前会被当成 fail/offline，永不触发认证）
+$r7 = Http-Probe -Url 'http://127.0.0.1:8899/forbidden'
+Check "403+portalHTML 判定 captive (实际: $($r7.Status))" ($r7.Status -eq 'captive')
+
+# 用例8: 403 且无认证特征 → fail
+$r8 = Http-Probe -Url 'http://127.0.0.1:8899/forbidden-plain'
+Check "403+普通HTML 判定 fail (实际: $($r8.Status))" ($r8.Status -eq 'fail')
+
+# 用例9: 时间戳文件损坏时必须返回 null 并删除文件（否则脚本会永久失败）
+$stamp = Join-Path $env:TEMP 'campus_probe_corrupt_test.ts'
+Set-Content -LiteralPath $stamp -Value 'not-a-timestamp' -Encoding UTF8
+$bad = Read-TimestampFile -Path $stamp
+Check "损坏时间戳返回 null (实际: $($null -eq $bad))" ($null -eq $bad)
+Check "损坏时间戳文件被删除 (实际存在: $(Test-Path $stamp))" (-not (Test-Path -LiteralPath $stamp))
 
 Stop-Job $job | Out-Null; Remove-Job $job -Force
 
