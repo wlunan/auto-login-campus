@@ -40,12 +40,14 @@
 │   ├── uninstall_task.ps1        # 卸载任务计划（回滚）
 │   ├── keepalive_loop.ps1        # 备用：启动文件夹守护循环（免管理员，已停用）
 │   ├── run_install_admin.bat     # 一键管理员安装入口
-│   └── admin_*.ps1               # 管理员调试/查询脚本
+│   └── tests/
+│       └── test_captive_detection.ps1   # 探测逻辑回归测试
 ├── docs/
 │   ├── 01-现状报告.md
 │   ├── 02-方案设计.md
 │   ├── 03-操作记录.md
-│   └── 04-回滚步骤.md
+│   ├── 04-回滚步骤.md
+│   └── 05-原理说明.md            # 系统原理与认证流程详解
 └── logs/
     └── auto_login.log           # 运行日志（git 忽略）
 ```
