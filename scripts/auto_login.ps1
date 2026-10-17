@@ -60,15 +60,35 @@ function Read-Ini {
     return $ini
 }
 
+function Extract-PortalUrl {
+    <#
+        从被劫持的页面 HTML 里提取完整 portal.do URL（深澜页面通常有
+        location.href="http://10.101.2.194:6060/portal.do?..." 或 meta refresh）。
+        提取不到则返回空。
+    #>
+    param([string]$Body)
+    if ($Body -match 'https?://[^"''<>\s]*portal\.do[^"''<>\s]*') {
+        return $Matches[0]
+    }
+    if ($Body -match '(?:meta[^>]*refresh[^>]*content="[^"]*url\s*=\s*)?([^"''<>\s]*portal\.do[^"''<>\s]*)') {
+        $u = $Matches[1]
+        if ($u -match '^https?://') { return $u }
+    }
+    return ''
+}
+
 function Http-Probe {
     <#
-        对单个 URL 做 HTTP 探测（不跟随重定向）。
-        返回 @{Status='ok'|'redirect'|'fail'; Location='跳转地址'}
-        - ok: 返回 2xx（能正常访问）
-        - redirect: 返回 3xx，Location 为跳转地址（可能被 BRAS 劫持到认证页）
+        对单个 URL 做 HTTP 探测（不跟随重定向），并检查响应是否被 BRAS 劫持成认证页。
+        返回 @{Status='ok'|'captive'|'fail'; Location='portal地址'}
+        - ok: 正常访问（2xx 且页面无 portal 特征；或 3xx 但跳转目标不是认证页）
+        - captive: 被劫持到认证页（深澜两种劫持方式都会命中：
+            a) 3xx + Location 指向 portal；b) 200 + 页面 HTML 含 portal.do 特征）
         - fail: 连接失败（无网络）
     #>
     param([string]$Url)
+    $portalMark = 'portal\.do|quickauth|wlanuserip|10\.101\.2\.194|srun_portal|login\.do|userid'
+
     try {
         $req = [System.Net.HttpWebRequest]::Create($Url)
         $req.Method = 'GET'
@@ -77,11 +97,38 @@ function Http-Probe {
         $req.Proxy = $null
         $resp = $req.GetResponse()
         $code = [int]$resp.StatusCode
-        $resp.Close()
         if ($code -ge 200 -and $code -lt 300) {
+            # 关键：200 也可能是被劫持的认证页 HTML（深澜透明劫持），必须读响应体检查
+            try {
+                $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
+                $buf = New-Object char[] 8192
+                $read = $sr.Read($buf, 0, 8192)
+                $body = -join $buf[0..([Math]::Max(0, $read - 1))]
+                $sr.Close()
+            } catch {
+                $body = ''
+            } finally {
+                $resp.Close()
+            }
+            if ($body -match $portalMark) {
+                $p = Extract-PortalUrl -Body $body
+                if (-not $p) { $p = $Url }
+                return @{ Status = 'captive'; Location = $p }
+            }
             return @{ Status = 'ok'; Location = '' }
         }
-        return @{ Status = 'redirect'; Location = '' }
+        if ($code -ge 300 -and $code -lt 400) {
+            # AllowAutoRedirect=false 时 3xx 是正常响应（不抛异常）
+            $loc = $resp.Headers['Location']
+            $resp.Close()
+            if ($loc -match $portalMark) {
+                return @{ Status = 'captive'; Location = $loc }
+            }
+            # 跳转但非认证页（如 http→https 正常跳转），说明能上网
+            return @{ Status = 'ok'; Location = '' }
+        }
+        $resp.Close()
+        return @{ Status = 'ok'; Location = '' }
     } catch [System.Net.WebException] {
         $resp = $_.Exception.Response
         if ($resp) {
@@ -89,7 +136,11 @@ function Http-Probe {
             if ($code -ge 300 -and $code -lt 400) {
                 $loc = $resp.Headers['Location']
                 $resp.Close()
-                return @{ Status = 'redirect'; Location = $loc }
+                if ($loc -match $portalMark) {
+                    return @{ Status = 'captive'; Location = $loc }
+                }
+                # 跳转但非认证页（如 http→https 正常跳转），说明能上网
+                return @{ Status = 'ok'; Location = '' }
             }
             $resp.Close()
         }
@@ -103,8 +154,8 @@ function Get-NetworkStatus {
     <#
         判断当前网络状态。
         返回 @{Status='online'|'captive'|'offline'; PortalUrl='认证入口URL'}
-        - online: 能正常访问外网（HTTP 200，或跳转但目标不是认证页）
-        - captive: HTTP 被 BRAS 重定向到认证页（portal），需要认证
+        - online: 能正常访问外网
+        - captive: HTTP 被 BRAS 劫持到认证页（200+HTML 或 3xx），需要认证
         - offline: 连接失败，无网络
     #>
     param([string]$CaptiveUrl, [string]$FallbackUrl)
@@ -114,12 +165,8 @@ function Get-NetworkStatus {
         if ($r.Status -eq 'ok') {
             return @{ Status = 'online'; PortalUrl = '' }
         }
-        if ($r.Status -eq 'redirect') {
-            if ($r.Location -match 'portal|10\.101\.|login|auth') {
-                return @{ Status = 'captive'; PortalUrl = $r.Location }
-            }
-            # 跳转但非认证页（如 http→https 正常跳转），说明能上网
-            return @{ Status = 'online'; PortalUrl = '' }
+        if ($r.Status -eq 'captive') {
+            return @{ Status = 'captive'; PortalUrl = $r.Location }
         }
         # fail: 尝试下一个探测地址
     }
@@ -232,8 +279,8 @@ try {
         exit 0
     }
 
-    # captive：未认证，HTTP 被重定向到认证页
-    Write-Log "检测到未认证（HTTP 被重定向到 Portal），开始自动认证..."
+    # captive：未认证，HTTP 被 BRAS 劫持到认证页（200+HTML 或 3xx）
+    Write-Log "检测到未认证（HTTP 被劫持到认证页），开始自动认证..."
     $portalUrl = $ns.PortalUrl
     Write-Log "捕获到 Portal 跳转: $portalUrl"
 

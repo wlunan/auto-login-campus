@@ -77,6 +77,7 @@ Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -T
 > 手机热点（如 Redmi K70 Ultra）网络里，校园网认证服务器 `10.101.2.194` 根本不可达，脚本无法认证。
 > 确认方法：运行 `netsh wlan show interfaces`，看 `SSID` 那行是不是 `HTU_Student`。
 > 若电脑断开校园网后自动连了手机热点，手动切回：
+>
 > ```powershell
 > netsh wlan connect name="HTU_Student" ssid="HTU_Student"
 > ```
