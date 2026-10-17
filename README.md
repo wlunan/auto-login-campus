@@ -20,7 +20,7 @@
    - 被劫持时自动捕获 Portal 跳转，向 `http://10.101.2.194:6060/quickauth.do` 提交账号密码
    - 失败重试、写日志、绕开系统代理、日志超 5MB 自动归档
 3. **Windows 任务计划** `CampusAutoLogin`（当前启用方案）：
-   - 主体 SYSTEM，开机后 30 秒启动，每 1 分钟执行一次
+   - 主体 SYSTEM，安装后立即开始，每 1 分钟执行一次；重启后 30 秒继续
    - 不依赖用户登录
    - 安装：管理员运行 `install_task.ps1`
 
@@ -30,7 +30,7 @@
 ## 目录结构
 
 ```
-20261017-自动连接校园网/
+auto-login-campus/
 ├── README.md                    # 本文件
 ├── .gitignore
 ├── scripts/
@@ -63,14 +63,14 @@
 右键「以管理员身份运行」 PowerShell，执行：
 
 ```powershell
-cd E:\06DateClass\20261017-自动连接校园网\scripts
+cd E:\06DateClass\auto-login-campus\scripts
 .\install_task.ps1
 ```
 
 ### 3. 查看日志
 
 ```powershell
-Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -Tail 20 -Wait
+Get-Content E:\06DateClass\auto-login-campus\logs\auto_login.log -Tail 20 -Wait
 ```
 
 ### 4. 可调配置（改 `scripts\config.ini`，改完下一分钟自动生效，无需重装）
@@ -101,7 +101,7 @@ Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -T
 1. 确认当前连的是 `HTU_Student`（见上方前提）
 2. 打开日志实时窗口：
    ```powershell
-   Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -Tail 30 -Wait
+   Get-Content E:\06DateClass\auto-login-campus\logs\auto_login.log -Tail 30 -Wait
    ```
 3. 点右下角 WiFi → **断开 `HTU_Student`**
 4. 等 10 秒，**重新连接 `HTU_Student`**（连的时候看清 SSID，别连成手机热点）
@@ -132,10 +132,10 @@ Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -T
 脚本不依赖任务计划，可以随时手工跑一次。典型用途：**Wi-Fi 已连上 `HTU_Student` 但尚未认证**，想立刻验证一次真实登录，不必断开重连或干等 1 分钟。
 
 ```powershell
-cd E:\06DateClass\20261017-自动连接校园网\scripts
+cd E:\06DateClass\auto-login-campus\scripts
 powershell -NoProfile -ExecutionPolicy Bypass -File .\auto_login.ps1
 "exit=$LASTEXITCODE"
-Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -Tail 30
+Get-Content E:\06DateClass\auto-login-campus\logs\auto_login.log -Tail 30
 ```
 
 ⚠️ **必须用 `-File` 方式运行**，不要复制代码粘贴到控制台、也不要点号加载（`. .\auto_login.ps1`）。脚本靠 `$PSScriptRoot` 定位 `config.ini` 和日志目录，只有 `-File` 才会正确赋值；点号加载会直接执行整个主流程。
@@ -169,7 +169,7 @@ Remove-Item "$env:TEMP\campus_probe.ts","$env:TEMP\campus_heartbeat.ts" -Force -
 想先确认"能不能正确识别出被劫持"，而不想真的登进去。注意**不能点号加载**（会执行主流程），正确做法是从源码里只提取函数定义：
 
 ```powershell
-$p = 'E:\06DateClass\20261017-自动连接校园网\scripts\auto_login.ps1'
+$p = 'E:\06DateClass\auto-login-campus\scripts\auto_login.ps1'
 $t = $null; $e = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($p, [ref]$t, [ref]$e)
 $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
@@ -209,7 +209,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\auto_login.ps1 -ConfigPath
 校园网未认证时有**两类劫持表现**：3xx 跳转到认证页，或直接返回 200/403 + 认证页 HTML（深澜透明劫持；部分 BRAS 用 403 承载认证页）。脚本对两类都识别——只要响应里出现 `portal.do` / `quickauth` / `wlanuserip` 特征，就判定未认证并自动提交；若提不出参数，会主动 GET `portal.do` 兜底，拿不到必要参数则明确报错而不是硬提交。可先跑回归测试确认探测逻辑正常：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File E:\06DateClass\20261017-自动连接校园网\scripts\tests\test_captive_detection.ps1
+powershell -ExecutionPolicy Bypass -File E:\06DateClass\auto-login-campus\scripts\tests\test_captive_detection.ps1
 ```
 
 预期输出：`11 通过, 0 失败`
