@@ -19,7 +19,13 @@
    - 每 1 分钟 ping 223.5.5.5 检测外网
    - 不通时自动捕获 Portal 跳转，向 `http://10.101.2.194:6060/quickauth.do` 提交账号密码
    - 失败重试、写日志、绕开系统代理
-3. **Windows 任务计划** `CampusAutoLogin`：开机后 30 秒启动，每 1 分钟执行一次，SYSTEM 权限运行。
+3. **Windows 任务计划** `CampusAutoLogin`（当前启用方案）：
+   - 主体 SYSTEM，开机后 30 秒启动，每 1 分钟执行一次
+   - 不依赖用户登录
+   - 安装：管理员运行 `install_task.ps1`
+
+> 备用方案：`scripts/keepalive_loop.ps1` + 启动文件夹快捷方式（免管理员）。
+> 曾在任务计划无法安装时使用，任务计划安装成功后已停用，脚本保留备用。
 
 ## 目录结构
 
@@ -31,7 +37,10 @@
 │   ├── config.ini               # 配置（账号密码，密码需手动填写）
 │   ├── auto_login.ps1           # 主认证脚本
 │   ├── install_task.ps1          # 安装任务计划（需管理员）
-│   └── uninstall_task.ps1        # 卸载任务计划（回滚）
+│   ├── uninstall_task.ps1        # 卸载任务计划（回滚）
+│   ├── keepalive_loop.ps1        # 备用：启动文件夹守护循环（免管理员，已停用）
+│   ├── run_install_admin.bat     # 一键管理员安装入口
+│   └── admin_*.ps1               # 管理员调试/查询脚本
 ├── docs/
 │   ├── 01-现状报告.md
 │   ├── 02-方案设计.md

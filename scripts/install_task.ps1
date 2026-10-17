@@ -13,16 +13,24 @@ $taskName = 'CampusAutoLogin'
 $scriptDir = $PSScriptRoot
 $mainScript = Join-Path $scriptDir 'auto_login.ps1'
 $workDir = $scriptDir
+$installLog = Join-Path (Split-Path $scriptDir -Parent) 'logs\install_task.log'
+
+function Write-Install {
+    param([string]$Message)
+    $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
+    Write-Host $line
+    try { Add-Content -LiteralPath $installLog -Value $line -Encoding UTF8 -ErrorAction Stop } catch {}
+}
 
 if (-not (Test-Path -LiteralPath $mainScript)) {
-    Write-Host "找不到主脚本: $mainScript" -ForegroundColor Red
+    Write-Install "找不到主脚本: $mainScript"
     exit 1
 }
 
 # 如果任务已存在，先删除
 $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-Host "发现已存在的任务 $taskName，先删除..." -ForegroundColor Yellow
+    Write-Install "发现已存在的任务 $taskName，先删除..."
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
 }
 
@@ -58,13 +66,18 @@ Register-ScheduledTask `
     -Settings $settings `
     -Description '河南师大校园网(HTU_Student)断网自动重认证保活，每1分钟检测，SYSTEM权限运行' | Out-Null
 
-Write-Host "任务计划 $taskName 安装完成。" -ForegroundColor Green
-Write-Host "  - 触发：开机后 30 秒开始，每 1 分钟执行一次" -ForegroundColor Gray
-Write-Host "  - 权限：SYSTEM（不依赖用户登录）" -ForegroundColor Gray
-Write-Host "  - 脚本：$mainScript" -ForegroundColor Gray
-Write-Host ""
-Write-Host "立即测试运行一次..." -ForegroundColor Cyan
-Start-ScheduledTask -TaskName $taskName
+Write-Install "任务计划 $taskName 安装完成。"
+Write-Install "  - 触发：开机后 30 秒开始，每 1 分钟执行一次"
+Write-Install "  - 权限：SYSTEM（不依赖用户登录）"
+Write-Install "  - 脚本：$mainScript"
+Write-Install "立即测试运行一次..."
+try {
+    Start-ScheduledTask -TaskName $taskName
+    Write-Install "已触发测试运行。"
+} catch {
+    Write-Install "触发测试运行失败: $($_.Exception.Message)"
+}
 Start-Sleep -Seconds 3
-Get-ScheduledTask -TaskName $taskName | Select-Object TaskName, State | Format-List
-Write-Host "查看日志: $workDir\..\logs\auto_login.log" -ForegroundColor Cyan
+$t = Get-ScheduledTask -TaskName $taskName
+Write-Install "任务状态: $($t.State)"
+Write-Install "查看日志: $workDir\..\logs\auto_login.log"
