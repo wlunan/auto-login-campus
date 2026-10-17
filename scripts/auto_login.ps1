@@ -247,6 +247,9 @@ try {
     $retryWait  = [int]$cfg['Settings']['RetryInterval']
     $maxRetries = [int]$cfg['Settings']['MaxRetries']
     $fallback   = $cfg['Network']['FallbackUrl']
+    # 日志模式: heartbeat=在线时按心跳间隔写日志(防刷屏); normal=每次运行都写一条
+    $logMode = [string]$cfg['Settings']['LogMode']
+    if ($logMode -ne 'normal') { $logMode = 'heartbeat' }
 
     if ($password -eq 'YOUR_PASSWORD_HERE' -or [string]::IsNullOrWhiteSpace($password)) {
         Write-Log "密码仍为占位符，请先编辑 config.ini 填入真实校园网密码" 'ERROR'
@@ -257,19 +260,24 @@ try {
     $ns = Get-NetworkStatus -CaptiveUrl $captive -FallbackUrl $fallback
 
     if ($ns.Status -eq 'online') {
-        # 在线。为了不刷爆日志，30 分钟写一次心跳
-        $heartbeatFile = Join-Path $env:TEMP 'campus_heartbeat.ts'
-        $now = [DateTime]::Now
         $shouldLog = $true
-        if (Test-Path $heartbeatFile) {
-            $last = [DateTime]::Parse((Get-Content $heartbeatFile -Raw).Trim())
-            if (($now - $last).TotalMinutes -lt [int]$cfg['Settings']['HeartbeatMinutes']) {
-                $shouldLog = $false
+        $now = [DateTime]::Now
+        if ($logMode -eq 'heartbeat') {
+            # 心跳模式：按 HeartbeatMinutes 间隔写一条，避免刷爆日志
+            $heartbeatFile = Join-Path $env:TEMP 'campus_heartbeat.ts'
+            if (Test-Path $heartbeatFile) {
+                $last = [DateTime]::Parse((Get-Content $heartbeatFile -Raw).Trim())
+                if (($now - $last).TotalMinutes -lt [int]$cfg['Settings']['HeartbeatMinutes']) {
+                    $shouldLog = $false
+                }
             }
         }
         if ($shouldLog) {
-            Write-Log "外网可达（HTTP 探测通过），无需认证。"
-            $now.ToString('o') | Set-Content -LiteralPath $heartbeatFile -Encoding UTF8
+            $modeNote = if ($logMode -eq 'normal') { '（normal 模式每次记录）' } else { '' }
+            Write-Log "外网可达（HTTP 探测通过），无需认证。$modeNote"
+            if ($logMode -eq 'heartbeat') {
+                $now.ToString('o') | Set-Content -LiteralPath $heartbeatFile -Encoding UTF8
+            }
         }
         exit 0
     }
