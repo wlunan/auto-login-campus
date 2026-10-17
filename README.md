@@ -71,6 +71,62 @@ cd E:\06DateClass\20261017-自动连接校园网\scripts
 Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -Tail 20 -Wait
 ```
 
+## 测试验收（怎么测）
+
+> ⚠️ **最重要前提：测试时电脑必须连的是校园网 `HTU_Student`，绝不能是手机热点！**
+> 手机热点（如 Redmi K70 Ultra）网络里，校园网认证服务器 `10.101.2.194` 根本不可达，脚本无法认证。
+> 确认方法：运行 `netsh wlan show interfaces`，看 `SSID` 那行是不是 `HTU_Student`。
+> 若电脑断开校园网后自动连了手机热点，手动切回：
+> ```powershell
+> netsh wlan connect name="HTU_Student" ssid="HTU_Student"
+> ```
+
+### 场景 1：断网自动重认证（最常用）
+
+1. 确认当前连的是 `HTU_Student`（见上方前提）
+2. 打开日志实时窗口：
+   ```powershell
+   Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -Tail 30 -Wait
+   ```
+3. 点右下角 WiFi → **断开 `HTU_Student`**
+4. 等 10 秒，**重新连接 `HTU_Student`**（连的时候看清 SSID，别连成手机热点）
+5. 观察日志，**1 分钟内**应依次出现：
+   ```
+   [INFO] 外网不通（ping 223.5.5.5 失败），开始尝试 Portal 重认证...
+   [INFO] 捕获到 Portal 跳转: http://10.101.2.194:6060/portal.do?...
+   [INFO] 第 1/3 次提交 quickauth.do ...
+   [INFO] 认证成功！message=...
+   ```
+6. 验证：能打开网页 + 用另一台设备通过 GameViewer 能连上这台电脑
+
+### 场景 2：重启电脑
+
+1. 重启电脑
+2. 开机后自动进桌面（账号无密码），任务计划在开机 30 秒后启动，每 1 分钟检测
+3. 等 1~2 分钟，用另一台设备通过 GameViewer 连接
+4. 判断标准：远端能连上 = 通过；连不上就查日志
+
+### 场景 3：认证过期（可选）
+
+1. 浏览器打开认证页 `http://10.101.2.194:6060/portal.do`，找到"注销/下线"按钮点掉
+2. 或等校园网自然踢下线
+3. 观察日志是否 1 分钟内自动重新认证
+
+### 判断标准（三个都满足 = 通过）
+
+- 日志出现 `认证成功！`
+- 浏览器能正常打开网页
+- 远端设备 GameViewer 能连上电脑
+
+### 注意事项
+
+- 日志在线时 30 分钟才写一条心跳（防刷屏），**只有断网瞬间才写详细日志**，所以盯日志要在"断开 WiFi 后立刻"看
+- 断开重连后若拿到新 IP（DHCP 重新分配），属正常，脚本会从 302 跳转动态获取新 IP
+- 如果日志 1 分钟内没动静，先确认任务计划在跑：
+  ```powershell
+  Get-ScheduledTaskInfo -TaskName CampusAutoLogin
+  ```
+
 ## 回滚
 
 以管理员运行 `scripts\uninstall_task.ps1` 即可移除任务计划，脚本文件保留在目录中可手动删除。
