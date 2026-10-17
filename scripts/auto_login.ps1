@@ -247,13 +247,27 @@ try {
     $retryWait  = [int]$cfg['Settings']['RetryInterval']
     $maxRetries = [int]$cfg['Settings']['MaxRetries']
     $fallback   = $cfg['Network']['FallbackUrl']
-    # 日志模式: heartbeat=在线时按心跳间隔写日志(防刷屏); normal=每次运行都写一条
+    # 日志模式: heartbeat=在线时按心跳间隔写日志(防刷屏); normal=每次探测都写一条
     $logMode = [string]$cfg['Settings']['LogMode']
     if ($logMode -ne 'normal') { $logMode = 'heartbeat' }
+    # 探测间隔（分钟）: 1=每分钟(默认), 5=每5分钟, 0=任务每次触发都探测
+    $probeInterval = 0
+    if ($cfg['Settings']['ProbeIntervalMinutes']) {
+        try { $probeInterval = [int]$cfg['Settings']['ProbeIntervalMinutes'] } catch { $probeInterval = 1 }
+    }
+    $probeStamp = Join-Path $env:TEMP 'campus_probe.ts'
 
     if ($password -eq 'YOUR_PASSWORD_HERE' -or [string]::IsNullOrWhiteSpace($password)) {
         Write-Log "密码仍为占位符，请先编辑 config.ini 填入真实校园网密码" 'ERROR'
         exit 2
+    }
+
+    # 0. 探测间隔检查：未到间隔则静默跳过本次触发（任务计划仍每分钟触发，脚本自行节流）
+    if ($probeInterval -gt 0 -and (Test-Path $probeStamp)) {
+        $lastProbe = [DateTime]::Parse((Get-Content $probeStamp -Raw).Trim())
+        if (([DateTime]::Now - $lastProbe).TotalMinutes -lt $probeInterval) {
+            exit 0
+        }
     }
 
     # 1. HTTP 探测判断网络状态（ping 不可靠：校园网 BRAS 放行 ICMP 但拦截 HTTP，ping 通不代表已认证）
@@ -279,6 +293,8 @@ try {
                 $now.ToString('o') | Set-Content -LiteralPath $heartbeatFile -Encoding UTF8
             }
         }
+        # 在线，记录本次探测时间（供探测间隔抑制用）
+        $now.ToString('o') | Set-Content -LiteralPath $probeStamp -Encoding UTF8
         exit 0
     }
 
@@ -325,6 +341,8 @@ try {
     $verify = Get-NetworkStatus -CaptiveUrl $captive -FallbackUrl $fallback
     if ($verify.Status -eq 'online') {
         Write-Log "认证后外网恢复，任务完成。"
+        # 认证成功，记录本次探测时间（供探测间隔抑制用）
+        ([DateTime]::Now).ToString('o') | Set-Content -LiteralPath $probeStamp -Encoding UTF8
     } else {
         Write-Log "认证返回成功但 HTTP 探测仍不通（$($verify.Status)），可能需要更长时间生效，下次任务再验证。" 'WARN'
     }
