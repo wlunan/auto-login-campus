@@ -1,5 +1,7 @@
 # 河南师范大学校园网自动连接方案
 
+[10.101.2.194:6060/portal.do?wlanuserip=10.104.0.10&amp;wlanacname=HSD-BRAS-2&amp;mac=aa:bb:cc:dd:ee:ff&amp;vlan=19953605&amp;hostname=desktop-example&amp;rand=1e45325ef8fad5e&amp;url=http%3A%2F%2F1.1.1.1](http://10.101.2.194:6060/portal.do?wlanuserip=10.104.0.10&wlanacname=HSD-BRAS-2&mac=aa:bb:cc:dd:ee:ff&vlan=19953605&hostname=desktop-example&rand=1e45325ef8fad5e&url=http%3A%2F%2F1.1.1.1)
+
 ## 项目目标
 
 办公室工位电脑（某品牌笔记本，Windows 11）连接 HTU_Student 校园网，在以下场景下自动恢复网络和远程控制（GameViewer），无需到现场：
@@ -66,11 +68,11 @@ Get-Content E:\06DateClass\20261017-自动连接校园网\logs\auto_login.log -T
 
 ## 关键信息
 
-| 项目 | 值 |
-|---|---|
-| 校园网 SSID | HTU_Student |
-| 认证方式 | Web Portal（深澜/Srun quickauth.do） |
-| 认证服务器 | http://10.101.2.194:6060 |
-| 账号后缀 | 学生 `@htu`，教职工 `@htu.edu.cn` |
-| 远程软件 | 网易 GameViewer（UU 远程） |
-| 无需验证码 | 是（模板 noTec） |
+| 项目        | 值                                    |
+| ----------- | ------------------------------------- |
+| 校园网 SSID | HTU_Student                           |
+| 认证方式    | Web Portal（深澜/Srun quickauth.do）  |
+| 认证服务器  | http://10.101.2.194:6060              |
+| 账号后缀    | 学生 `@htu`，教职工 `@htu.edu.cn` |
+| 远程软件    | 网易 GameViewer（UU 远程）            |
+| 无需验证码  | 是（模板 noTec）                      |

@@ -61,9 +61,9 @@ function Read-Ini {
 }
 
 function Test-Internet {
-    param([string]$Host)
+    param([string]$Target)
     try {
-        $r = Test-Connection -ComputerName $Host -Count 2 -Quiet -ErrorAction Stop
+        $r = Test-Connection -ComputerName $Target -Count 2 -Quiet -ErrorAction Stop
         return [bool]$r
     } catch {
         return $false
@@ -181,7 +181,7 @@ try {
     }
 
     # 1. 先检测外网
-    if (Test-Internet -Host $pingHost) {
+    if (Test-Internet -Target $pingHost) {
         # 在线。为了不刷爆日志，30 分钟写一次心跳
         $heartbeatFile = Join-Path $env:TEMP 'campus_heartbeat.ts'
         $now = [DateTime]::Now
@@ -261,7 +261,7 @@ try {
 
     # 5. 认证后稍等再 ping 验证
     Start-Sleep -Seconds 3
-    if (Test-Internet -Host $pingHost) {
+    if (Test-Internet -Target $pingHost) {
         Write-Log "认证后外网恢复，任务完成。"
     } else {
         Write-Log "认证返回成功但 ping 仍不通，可能需要更长时间生效，下次任务再验证。" 'WARN'
