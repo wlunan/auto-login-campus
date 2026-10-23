@@ -20,9 +20,9 @@
    - 被劫持时自动捕获 Portal 跳转，向 `http://10.101.2.194:6060/quickauth.do` 提交账号密码
    - 失败重试、写日志、绕开系统代理、日志超 5MB 自动归档
 3. **Windows 任务计划** `CampusAutoLogin`（当前启用方案）：
-   - 主体 SYSTEM，安装后立即开始，每 1 分钟执行一次；重启后 30 秒继续
+   - 主体 SYSTEM，安装后 30 秒开始、每 1 分钟执行一次；重启后同样 30 秒接续
    - 不依赖用户登录
-   - 安装：管理员运行 `install_task.ps1`
+   - 安装：管理员运行 `install_task.ps1`，或双击 `run_install_admin.bat`（自提权）
 
 > 备用方案：`scripts/keepalive_loop.ps1` + 启动文件夹快捷方式（免管理员）。
 > 曾在任务计划无法安装时使用，任务计划安装成功后已停用，脚本保留备用。
@@ -34,12 +34,13 @@ auto-login-campus/
 ├── README.md                    # 本文件
 ├── .gitignore
 ├── scripts/
-│   ├── config.ini               # 配置（账号密码，密码需手动填写）
+│   ├── config.ini               # 配置（账号密码，密码需手动填写，git 忽略）
+│   ├── config.example.ini       # 配置模板（提交用，密码为占位符）
 │   ├── auto_login.ps1           # 主认证脚本
-│   ├── install_task.ps1          # 安装任务计划（需管理员）
-│   ├── uninstall_task.ps1        # 卸载任务计划（回滚）
-│   ├── keepalive_loop.ps1        # 备用：启动文件夹守护循环（免管理员，已停用）
-│   ├── run_install_admin.bat     # 一键管理员安装入口
+│   ├── install_task.ps1         # 安装任务计划（需管理员）
+│   ├── uninstall_task.ps1       # 卸载任务计划（回滚）
+│   ├── keepalive_loop.ps1       # 备用：启动文件夹守护循环（免管理员，已停用）
+│   ├── run_install_admin.bat    # 一键安装入口（自提权）
 │   └── tests/
 │       └── test_captive_detection.ps1   # 探测逻辑回归测试
 ├── docs/
@@ -49,7 +50,9 @@ auto-login-campus/
 │   ├── 04-回滚步骤.md
 │   └── 05-原理说明.md            # 系统原理与认证流程详解
 └── logs/
-    └── auto_login.log           # 运行日志（git 忽略）
+    ├── auto_login.log           # 运行日志（git 忽略）
+    ├── install_task.log         # 安装日志（git 忽略）
+    └── install_stdout.txt       # 提权安装的控制台输出（git 忽略）
 ```
 
 ## 快速开始
@@ -60,12 +63,16 @@ auto-login-campus/
 
 ### 2. 安装任务计划（需要管理员）
 
-右键「以管理员身份运行」 PowerShell，执行：
+方式一，双击 `scripts\run_install_admin.bat`：会自动弹 UAC 提权，失败时把日志直接打在窗口里。
+
+方式二，右键「以管理员身份运行」PowerShell，执行：
 
 ```powershell
 cd E:\06DateClass\auto-login-campus\scripts
 .\install_task.ps1
 ```
+
+成功后应看到「任务状态: Ready」和一条未来的「下次运行时间」；若提示触发器未生效，别忽略——任务可能是"装上了但永不运行"。
 
 ### 3. 查看日志
 
@@ -84,6 +91,9 @@ Get-Content E:\06DateClass\auto-login-campus\logs\auto_login.log -Tail 20 -Wait
 | `Ssid`（`[Network]`）           | `HTU_Student` | 提交认证时上报的 SSID，换校区/换 SSID 时改这里，无需改代码              |
 
 > 说明：任务计划本身保持每 1 分钟触发一次，脚本读 `ProbeIntervalMinutes` 自行节流——未到间隔的运行会静默跳过，不占资源。
+>
+> ⚠️ 如果你把 `ProbeIntervalMinutes` 调大了（例如 `30`），断网后的恢复时间和测试等待时间都同比例变长。**抓「断网自动重认证」时必须先临时改回 `1`**，否则会误以为脚本没跑。
+> `Ssid` 项缺失或留空时，脚本按 `HTU_Student` 处理。
 
 ## 测试验收（怎么测）
 
@@ -105,7 +115,7 @@ Get-Content E:\06DateClass\auto-login-campus\logs\auto_login.log -Tail 20 -Wait
    ```
 3. 点右下角 WiFi → **断开 `HTU_Student`**
 4. 等 10 秒，**重新连接 `HTU_Student`**（连的时候看清 SSID，别连成手机热点）
-5. 观察日志，**1 分钟内**应依次出现：
+5. 观察日志，**1 分钟内**（`ProbeIntervalMinutes=1` 时；调大过就按该间隔等）应依次出现：
    ```
    [INFO] 检测到未认证（HTTP 被劫持到认证页），开始自动认证...
    [INFO] 捕获到 Portal 跳转: http://10.101.2.194:6060/portal.do?...
@@ -117,7 +127,7 @@ Get-Content E:\06DateClass\auto-login-campus\logs\auto_login.log -Tail 20 -Wait
 ### 场景 2：重启电脑
 
 1. 重启电脑
-2. 开机后自动进桌面（账号无密码），任务计划在开机 30 秒后启动，每 1 分钟检测
+2. 开机后自动进桌面（账号无密码），任务计划由开机触发器在 30 秒后接续，每 1 分钟检测（首次安装则是安装后 30 秒立即开始，不必等重启）
 3. 等 1~2 分钟，用另一台设备通过 GameViewer 连接
 4. 判断标准：远端能连上 = 通过；连不上就查日志
 
@@ -125,7 +135,7 @@ Get-Content E:\06DateClass\auto-login-campus\logs\auto_login.log -Tail 20 -Wait
 
 1. 浏览器打开认证页 `http://10.101.2.194:6060/portal.do`，找到"注销/下线"按钮点掉
 2. 或等校园网自然踢下线
-3. 观察日志是否 1 分钟内自动重新认证
+3. 观察日志是否在 `ProbeIntervalMinutes` 个间隔内自动重新认证（默认 1 分钟）
 
 ### 场景 4：手动主动执行（不用等任务计划）
 
