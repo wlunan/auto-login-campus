@@ -1,6 +1,5 @@
 # 河南师范大学校园网自动连接方案
 
-[10.101.2.194:6060/portal.do?wlanuserip=10.104.0.10&amp;wlanacname=HSD-BRAS-2&amp;mac=aa:bb:cc:dd:ee:ff&amp;vlan=19953605&amp;hostname=desktop-example&amp;rand=1e45325ef8fad5e&amp;url=http%3A%2F%2F1.1.1.1](http://10.101.2.194:6060/portal.do?wlanuserip=10.104.0.10&wlanacname=HSD-BRAS-2&mac=aa:bb:cc:dd:ee:ff&vlan=19953605&hostname=desktop-example&rand=1e45325ef8fad5e&url=http%3A%2F%2F1.1.1.1)
 
 ## 项目目标
 
@@ -44,7 +43,8 @@ auto-login-campus/
 │   ├── run_install_admin.bat    # 一键安装入口（自提权）
 │   └── tests/
 │       ├── test_captive_detection.ps1   # 探测逻辑回归测试
-│       └── test_wifi_autoconnect.ps1    # WiFi 自动连接解析回归测试
+│       ├── test_wifi_autoconnect.ps1    # WiFi 自动连接解析回归测试
+│       └── test_install_verdict.ps1     # 安装结果判定（0/2 退出码）回归测试
 ├── docs/
 │   ├── 01-现状报告.md
 │   ├── 02-方案设计.md
@@ -79,7 +79,7 @@ Copy-Item .\config.example.ini .\config.ini
 
 ### 2. 安装任务计划（需要管理员）
 
-方式一，双击 `scripts\run_install_admin.bat`：会自动弹 UAC 提权，失败时把日志直接打在窗口里。
+方式一，双击 `scripts\run_install_admin.bat`：会自动弹 UAC 提权；提权后在新窗口里跑完安装，并把**完整安装输出回显在窗口**（同时存档到 `logs\install_stdout.txt`），窗口最后一行会给结论。
 
 方式二，右键「以管理员身份运行」PowerShell，执行：
 
@@ -88,7 +88,19 @@ cd E:\06DateClass\auto-login-campus\scripts
 .\install_task.ps1
 ```
 
-成功后应看到「任务状态: Ready」和一条未来的「下次运行时间」；若提示触发器未生效，别忽略——任务可能是"装上了但永不运行"。
+两种方式都以退出码表明结果：
+
+| 退出码 | 含义 | 窗口/输出里的标志 |
+| --- | --- | --- |
+| `0` | 完全成功：任务已启用、下次运行时间在未来 | `===== 结论: 安装成功 ... =====` |
+| `2` | 任务已注册但需人工核对（触发器未生效 / 状态非 Ready / 读不到任务信息） | `===== 结论: ... 有 N 项需要人工核对 =====` + 每项 `!` 原因 |
+| `1` | 注册失败，什么都没装（如 `0x80070005` 权限不足、`0x80041318` XML 越界） | `注册任务失败: ...` |
+
+关键校验仍是「下次运行时间」必须是未来时间——脚本会打印 `触发器生效，任务已排定在 ... 自动运行`。**看到 `结论: 安装成功` 才叫成功，不要只看有没有报错。**
+
+> 注册后脚本会最多等 20 秒让任务计划服务刷新下次运行时间（注册+立刻触发测试运行时，直接读常常读到空值，属服务端延迟，不是触发器坏了）。
+> 若仍报 `下次运行时间: （等待 20s 仍未刷新）` 并 `exit 2`：先**原样再跑一次安装脚本**（多数情况下第二次就正常），依旧不行再按提示去任务计划程序看触发器。
+
 
 ### 3. 查看日志
 
@@ -295,9 +307,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\auto_login.ps1 -ConfigPath
 ```powershell
 powershell -ExecutionPolicy Bypass -File E:\06DateClass\auto-login-campus\scripts\tests\test_captive_detection.ps1
 powershell -ExecutionPolicy Bypass -File E:\06DateClass\auto-login-campus\scripts\tests\test_wifi_autoconnect.ps1
+powershell -ExecutionPolicy Bypass -File E:\06DateClass\auto-login-campus\scripts\tests\test_install_verdict.ps1
 ```
 
-预期输出：分别 `11 通过, 0 失败` 与 `17 通过, 0 失败`（后者只喂固定 netsh 文本，不需要真连 WiFi）。
+预期输出依次为 `11 通过, 0 失败`、`17 通过, 0 失败`、`13 通过, 0 失败`（后两者只喂固定文本，不需要真连 WiFi、也不需要管理员）。
 
 ### 注意事项
 

@@ -106,7 +106,7 @@ function Check {
 # 用例1: 200 + portal HTML → captive，且提取出完整 portal URL
 $r1 = Http-Probe -Url 'http://127.0.0.1:8899/portalpage'
 Check "200+portalHTML 判定 captive (实际: $($r1.Status))" ($r1.Status -eq 'captive')
-Check "提取到 portal URL (实际: $($r1.Location))" ($r1.Location -match 'portal\.do\?wlanuserip=10\.104\.176\.86')
+Check "提取到 portal URL (实际: $($r1.Location))" ($r1.Location -match 'portal\.do\?wlanuserip=10\.104\.0\.10')
 
 # 用例2: 302 → portal → captive
 $r2 = Http-Probe -Url 'http://127.0.0.1:8899/redirect'
