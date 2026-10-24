@@ -68,12 +68,13 @@ $action = New-ScheduledTaskAction `
     -WorkingDirectory $workDir
 
 # 设置：SYSTEM 权限、最高权限、不 batter 提示、电源插电时也跑
+# ！！不要加 -RunOnlyIfNetworkAvailable：完全断网（WiFi 没连上）时该条件不成立，
+#   任务压根不会启动，脚本里的"扫描并自动连接 WiFi"逻辑就永远没机会执行。
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
-    -RunOnlyIfNetworkAvailable `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 5) `
     -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
     -MultipleInstances IgnoreNew

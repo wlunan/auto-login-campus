@@ -283,6 +283,138 @@ function Get-NetworkStatus {
     return @{ Status = 'offline'; PortalUrl = '' }
 }
 
+# ---------- WiFi 自动连接 ----------
+# 说明：netsh 输出随系统语言变化（英文 State/Name/All User Profile，中文 状态/名称/所有用户配置文件），
+# 因此一律只用"与本机语言无关"的字段（SSID 行、配置文件名右侧取值）做解析，
+# 并且把解析逻辑拆成纯函数，方便 tests 用固定文本回归。
+function ConvertFrom-WlanInterfaceOutput {
+    <#
+        解析 netsh wlan show interfaces 的文本，返回
+        @{ Connected = [bool]; Ssid = '已连接 SSID'; State = '状态原文' }
+        只用 SSID 行判断是否已关联：未连接时 netsh 不输出 SSID 行。
+        正则要求行首即 SSID，因此不会把 BSSID 行误判成 SSID。
+    #>
+    param([string]$Text)
+    $r = @{ Connected = $false; Ssid = ''; State = '' }
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $r }
+    foreach ($raw in ($Text -split "`r?`n")) {
+        $line = $raw.Trim()
+        if ($line -match '^(?<k>[^:：]+?)\s*[:：]\s*(?<v>.*)$') {
+            # 先取值再比较 key：下面的 -match 会重置 $Matches，不能等到分支里再读 $Matches['v']
+            $key = $Matches['k'].Trim()
+            $val = $Matches['v'].Trim()
+            if ($key -eq 'SSID') {
+                $r.Ssid = $val
+            } elseif ($key -match '^(State|状态)$') {
+                $r.State = $val
+            }
+        }
+    }
+    if ($r.Ssid) { $r.Connected = $true }
+    return $r
+}
+
+function ConvertFrom-WlanNetworksOutput {
+    <#
+        解析 netsh wlan show networks 的文本，判断目标 SSID 是否在扫描结果里。
+        行格式固定为 "SSID 1 : HTU_Student"（中英文一致）。
+    #>
+    param([string]$Text, [string]$Ssid)
+    if ([string]::IsNullOrWhiteSpace($Text) -or [string]::IsNullOrWhiteSpace($Ssid)) { return $false }
+    $pattern = '(?m)^\s*SSID\s+\d+\s*[:：]\s*' + [regex]::Escape($Ssid) + '\s*$'
+    return [bool]($Text -match $pattern)
+}
+
+function ConvertFrom-WlanProfilesOutput {
+    <#
+        解析 netsh wlan show profiles 的文本，判断是否已保存目标 SSID 的配置文件。
+        取冒号右侧的值做全等比较：中文系统是"所有用户配置文件 : HTU_Student"，
+        英文是"All User Profile : HTU_Student"，左侧表头无需关心。
+    #>
+    param([string]$Text, [string]$Ssid)
+    if ([string]::IsNullOrWhiteSpace($Text) -or [string]::IsNullOrWhiteSpace($Ssid)) { return $false }
+    $pattern = '(?m)[:：]\s*' + [regex]::Escape($Ssid) + '\s*$'
+    return [bool]($Text -match $pattern)
+}
+
+function Get-WlanState {
+    <#
+        读取当前无线接口状态。无无线网卡或 WLAN 服务未启动时 netsh 直接报错，
+        此时 Available=$false，调用方视为"不具备自动连接条件"而跳过。
+    #>
+    $text = ''
+    try { $text = (netsh wlan show interfaces 2>&1 | Out-String) } catch { $text = '' }
+    $r = ConvertFrom-WlanInterfaceOutput -Text $text
+    $r['Available'] = [bool]($text -match '(?m)^\s*(Name|名称)\s*[:：]')
+    return $r
+}
+
+function Test-WlanSsidVisible {
+    param([string]$Ssid)
+    $text = ''
+    try { $text = (netsh wlan show networks 2>&1 | Out-String) } catch { return $false }
+    return (ConvertFrom-WlanNetworksOutput -Text $text -Ssid $Ssid)
+}
+
+function Test-WlanProfileExists {
+    param([string]$Ssid)
+    $text = ''
+    try { $text = (netsh wlan show profiles 2>&1 | Out-String) } catch { return $false }
+    return (ConvertFrom-WlanProfilesOutput -Text $text -Ssid $Ssid)
+}
+
+function Connect-CampusWifi {
+    <#
+        已连的不是目标 SSID（或未连接）时尝试连接：
+          1) 必须先有配置文件——没有就明确报错，绝不猜密码/建配置
+          2) 必须能扫到该 SSID——扫不到（不在覆盖范围/网卡关闭）就直接等下次
+          3) netsh wlan connect 后轮询接口状态，等关联完成
+        返回 $true 只代表"已关联"，能否上网由调用方再用 HTTP 探测复核。
+    #>
+    param([string]$Ssid, [int]$TimeoutSeconds = 30, [int]$PollSeconds = 3)
+    if ([string]::IsNullOrWhiteSpace($Ssid)) { return $false }
+
+    $st = Get-WlanState
+    if (-not $st.Available) {
+        Write-Log "未检测到可用的无线接口（WLAN 服务未启动或无无线网卡），无法自动连接 WiFi" 'WARN'
+        return $false
+    }
+    if ($st.Connected -and $st.Ssid -eq $Ssid) { return $true }
+
+    if (-not (Test-WlanProfileExists -Ssid $Ssid)) {
+        Write-Log "未保存 WiFi「$Ssid」的配置文件，无法自动连接（需先在系统里手动连一次，勾选自动连接）" 'WARN'
+        return $false
+    }
+    if (-not (Test-WlanSsidVisible -Ssid $Ssid)) {
+        Write-Log "当前扫描不到 WiFi「$Ssid」（可能不在覆盖范围），本次不连接" 'WARN'
+        return $false
+    }
+
+    $from = if ($st.Ssid) { "当前连接「$($st.Ssid)」" } else { '当前未连接无线网络' }
+    Write-Log "检测到 WiFi「$Ssid」在覆盖范围内（$from），尝试自动连接..."
+
+    $out = ''
+    try {
+        $out = (netsh wlan connect name="$Ssid" ssid="$Ssid" 2>&1 | Out-String).Trim()
+        if ($out) { Write-Log "netsh wlan connect 返回: $($out -replace '\s+', ' ')" }
+    } catch {
+        Write-Log "netsh wlan connect 执行异常: $($_.Exception.Message)" 'ERROR'
+        return $false
+    }
+
+    $deadline = (Get-Date).AddSeconds([Math]::Max($TimeoutSeconds, 5))
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds ([Math]::Max($PollSeconds, 1))
+        $s = Get-WlanState
+        if ($s.Connected -and $s.Ssid -eq $Ssid) {
+            Write-Log "已关联 WiFi「$Ssid」，等待 DHCP 与 Portal 探测"
+            return $true
+        }
+    }
+    Write-Log "连接 WiFi「$Ssid」在 ${TimeoutSeconds}s 内未完成关联，本次放弃" 'WARN'
+    return $false
+}
+
 # ---------- 认证 ----------
 function Get-QueryParams {
     param([string]$Url)
@@ -429,6 +561,14 @@ try {
     $maxRetries = Get-ConfigInt -Ini $cfg -Section 'Settings' -Key 'MaxRetries' -Default 3
     $heartbeatMinutes = Get-ConfigInt -Ini $cfg -Section 'Settings' -Key 'HeartbeatMinutes' -Default 30
     $probeInterval    = Get-ConfigInt -Ini $cfg -Section 'Settings' -Key 'ProbeIntervalMinutes' -Default 1
+    # WiFi 自动连接：配置缺省时默认开启（未连校园网且能扫到时自动连）
+    $rawAutoWifi = [string]$cfg['Network']['AutoConnectWifi']
+    $autoConnectWifi = $true
+    if (-not [string]::IsNullOrWhiteSpace($rawAutoWifi)) {
+        $autoConnectWifi = ($rawAutoWifi.Trim().ToLower() -in @('true', '1', 'yes', 'on'))
+    }
+    $wifiTimeout      = Get-ConfigInt -Ini $cfg -Section 'Network' -Key 'WifiConnectTimeout' -Default 30
+    $wifiRetryMinutes = Get-ConfigInt -Ini $cfg -Section 'Network' -Key 'WifiRetryMinutes' -Default 5
     # 日志模式: heartbeat=在线时按心跳间隔写日志(防刷屏); normal=每次探测都写一条
     $logMode = [string]$cfg['Settings']['LogMode']
     if ($logMode -ne 'normal') { $logMode = 'heartbeat' }
@@ -481,6 +621,32 @@ try {
         # 在线，记录本次探测时间（供探测间隔抑制用）
         Write-TimestampFile -Path $probeStamp
         exit 0
+    }
+
+    # 1.5 offline 且未连校园网时，先尝试自动连接 WiFi，再重新探测一次
+    #     （能扫到 + 有配置文件才连；连上后同一次运行内继续走认证，不必等下一轮）
+    if ($ns.Status -eq 'offline' -and $autoConnectWifi) {
+        $wifiStamp = Join-Path $env:TEMP 'campus_wifi.ts'
+        $lastWifiTry = Read-TimestampFile -Path $wifiStamp
+        if ($lastWifiTry -and ((Get-Date) - $lastWifiTry).TotalMinutes -lt $wifiRetryMinutes) {
+            Write-Log "HTTP 探测失败；WiFi 自动连接冷却中（上次尝试 $($lastWifiTry.ToString('HH:mm:ss'))，${wifiRetryMinutes} 分钟内不重试）" 'WARN'
+        } else {
+            $wlan = Get-WlanState
+            if ($wlan.Connected -and $wlan.Ssid -eq $ssid) {
+                Write-Log "HTTP 探测失败，但已连接 WiFi「$ssid」——等待 DHCP/链路就绪，本次不重连" 'WARN'
+            } elseif (Connect-CampusWifi -Ssid $ssid -TimeoutSeconds $wifiTimeout) {
+                Start-Sleep -Seconds 3
+                $ns = Get-NetworkStatus -CaptiveUrl $captive -FallbackUrl $fallback
+                if ($ns.Status -eq 'offline') {
+                    Write-TimestampFile -Path $wifiStamp
+                    Write-Log "已关联 WiFi「$ssid」但外网仍不可达（DHCP 未完成或认证未生效），${wifiRetryMinutes} 分钟后再试" 'WARN'
+                } else {
+                    Remove-Item -LiteralPath $wifiStamp -Force -ErrorAction SilentlyContinue
+                }
+            } else {
+                Write-TimestampFile -Path $wifiStamp
+            }
+        }
     }
 
     if ($ns.Status -eq 'offline') {

@@ -18,6 +18,7 @@
 2. **自动认证脚本** `scripts/auto_login.ps1`：
    - 每 1 分钟 HTTP 探测外网（`1.1.1.1`，**不用 ping**：BRAS 放行 ICMP 但拦截 HTTP，ping 通不代表已认证）
    - 被劫持时自动捕获 Portal 跳转，向 `http://10.101.2.194:6060/quickauth.do` 提交账号密码
+   - **WiFi 层兜底**：探测到完全断网时，若当前没连校园网 WiFi 但能扫到、且系统已保存该 WiFi 的配置文件，先 `netsh wlan connect` 连上再继续认证（同一次运行内完成，不必等下一轮）
    - 失败重试、写日志、绕开系统代理、日志超 5MB 自动归档
 3. **Windows 任务计划** `CampusAutoLogin`（当前启用方案）：
    - 主体 SYSTEM，安装后 30 秒开始、每 1 分钟执行一次；重启后同样 30 秒接续
@@ -42,7 +43,8 @@ auto-login-campus/
 │   ├── keepalive_loop.ps1       # 备用：启动文件夹守护循环（免管理员，已停用）
 │   ├── run_install_admin.bat    # 一键安装入口（自提权）
 │   └── tests/
-│       └── test_captive_detection.ps1   # 探测逻辑回归测试
+│       ├── test_captive_detection.ps1   # 探测逻辑回归测试
+│       └── test_wifi_autoconnect.ps1    # WiFi 自动连接解析回归测试
 ├── docs/
 │   ├── 01-现状报告.md
 │   ├── 02-方案设计.md
@@ -57,9 +59,23 @@ auto-login-campus/
 
 ## 快速开始
 
-### 1. 填写校园网密码
+### 1. 准备配置文件并填写账号密码（必做，先做这步）
 
-编辑 `scripts/config.ini`，把 `Password = YOUR_PASSWORD_HERE` 改成你的真实校园网密码。
+仓库里只有模板 `scripts/config.example.ini`，`config.ini` 被 git 忽略、需要你自己创建。复制一份再改：
+
+```powershell
+cd E:\06DateClass\auto-login-campus\scripts
+Copy-Item .\config.example.ini .\config.ini
+```
+
+然后编辑 `scripts\config.ini`，至少确认/修改这两项：
+
+| 配置项                     | 说明                                                                              |
+| -------------------------- | --------------------------------------------------------------------------------- |
+| `Password`（`[Auth]`） | 把 `YOUR_PASSWORD_HERE` 改成你的真实校园网密码，**不改会直接 `exit 2`** |
+| `Username` / `Suffix`  | 学号与账号后缀（学生 `@htu`，教职工 `@htu.edu.cn`）                           |
+
+> 跳过这一步直接安装任务计划，任务只会每分钟失败一次并写 `config.ini 不存在` 的 WARN，日志里拿不到任何认证结果。
 
 ### 2. 安装任务计划（需要管理员）
 
@@ -82,13 +98,16 @@ Get-Content E:\06DateClass\auto-login-campus\logs\auto_login.log -Tail 20 -Wait
 
 ### 4. 可调配置（改 `scripts\config.ini`，改完下一分钟自动生效，无需重装）
 
-| 配置项                             | 默认          | 说明                                                                      |
-| ---------------------------------- | ------------- | ------------------------------------------------------------------------- |
-| `ProbeIntervalMinutes`           | `1`         | 探测间隔（分钟）。`1`=每分钟，`5`=每5分钟，`0`=任务每次触发都探测   |
-| `LogMode`                        | `normal`    | `normal`=每次探测写一条日志；`heartbeat`=在线时按心跳间隔写（防刷屏） |
-| `HeartbeatMinutes`               | `30`        | 仅 heartbeat 模式生效：在线时多少分钟写一条心跳                           |
-| `RetryInterval` / `MaxRetries` | `5` / `3` | 单次认证失败后的重试间隔（秒）与最多重试次数                              |
-| `Ssid`（`[Network]`）           | `HTU_Student` | 提交认证时上报的 SSID，换校区/换 SSID 时改这里，无需改代码              |
+| 配置项                                  | 默认            | 说明                                                                      |
+| --------------------------------------- | --------------- | ------------------------------------------------------------------------- |
+| `ProbeIntervalMinutes`                | `1`           | 探测间隔（分钟）。`1`=每分钟，`5`=每5分钟，`0`=任务每次触发都探测   |
+| `LogMode`                             | `normal`      | `normal`=每次探测写一条日志；`heartbeat`=在线时按心跳间隔写（防刷屏） |
+| `HeartbeatMinutes`                    | `30`          | 仅 heartbeat 模式生效：在线时多少分钟写一条心跳                           |
+| `RetryInterval` / `MaxRetries`      | `5` / `3`   | 单次认证失败后的重试间隔（秒）与最多重试次数                              |
+| `Ssid`（`[Network]`）               | `HTU_Student` | 提交认证时上报的 SSID，换校区/换 SSID 时改这里，无需改代码                |
+| `AutoConnectWifi`（`[Network]`）    | `true`        | 断网时若没连校园网但能扫到，是否自动连接（`false` 只认证不碰 WiFi）     |
+| `WifiConnectTimeout`（`[Network]`） | `30`          | 发起连接后等待关联完成的最长秒数                                          |
+| `WifiRetryMinutes`（`[Network]`）   | `5`           | 自动连接失败后的冷却分钟数，避免每分钟反复重连（`0`=不冷却）            |
 
 > 说明：任务计划本身保持每 1 分钟触发一次，脚本读 `ProbeIntervalMinutes` 自行节流——未到间隔的运行会静默跳过，不占资源。
 >
@@ -97,7 +116,7 @@ Get-Content E:\06DateClass\auto-login-campus\logs\auto_login.log -Tail 20 -Wait
 
 ## 测试验收（怎么测）
 
-> ⚠️ **最重要前提：测试时电脑必须连的是校园网 `HTU_Student`，绝不能是手机热点！**
+> ⚠️ **场景 1/2/3/4 的前提：测试时电脑必须连的是校园网 `HTU_Student`，绝不能是手机热点！**
 > 手机热点（如 Redmi K70 Ultra）网络里，校园网认证服务器 `10.101.2.194` 根本不可达，脚本无法认证。
 > 确认方法：运行 `netsh wlan show interfaces`，看 `SSID` 那行是不是 `HTU_Student`。
 > 若电脑断开校园网后自动连了手机热点，手动切回：
@@ -105,6 +124,10 @@ Get-Content E:\06DateClass\auto-login-campus\logs\auto_login.log -Tail 20 -Wait
 > ```powershell
 > netsh wlan connect name="HTU_Student" ssid="HTU_Student"
 > ```
+>
+> **例外是场景 5（未连接 WiFi 时自动连接）——那条必须故意断开校园网**。测它时把手机热点关掉，否则电脑可能先连上热点、脚本判定"在线"就不会去连校园网了。
+>
+> ⚠️ 反向影响：加了 WiFi 自动连接后，场景 1 里你手动断开 `HTU_Student`，脚本可能**先把 WiFi 自己连回来**再认证（这是新行为，不是异常）。想纯手工复现"断开→重连"，测试前临时把 `config.ini` 里 `AutoConnectWifi` 设为 `false`，测完改回。
 
 ### 场景 1：断网自动重认证（最常用）
 
@@ -164,13 +187,13 @@ Remove-Item "$env:TEMP\campus_probe.ts","$env:TEMP\campus_heartbeat.ts" -Force -
 
 真正有区分度的是其余退出码：
 
-| 退出码 | 含义                                       |
-| ------ | ------------------------------------------ |
-| `0`  | 在线无需认证 / 认证成功 / offline 提前退出 |
+| 退出码 | 含义                                             |
+| ------ | ------------------------------------------------ |
+| `0`  | 在线无需认证 / 认证成功 / offline 提前退出       |
 | `1`  | `config.ini` 不存在或缺少 `[Network]` 必填项 |
-| `2`  | 密码仍是 `YOUR_PASSWORD_HERE` 占位符     |
-| `3`  | 认证失败（重试次数耗尽）                   |
-| `99` | 未处理异常                                 |
+| `2`  | 密码仍是 `YOUR_PASSWORD_HERE` 占位符           |
+| `3`  | 认证失败（重试次数耗尽）                         |
+| `99` | 未处理异常                                       |
 
 判断成功应以日志出现 `认证成功！message=...` 为准，不能只看退出码。
 
@@ -210,25 +233,80 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\auto_login.ps1 -ConfigPath
 > Start-ScheduledTask -TaskName CampusAutoLogin   # 需管理员
 > ```
 
+### 场景 5：未连接校园网 WiFi（自动连接）
+
+前提（缺一不可，脚本不猜密码、不新建配置）：
+
+1. 这台电脑**以前手动连过** `HTU_Student`，系统里已有该 WiFi 的配置文件（`netsh wlan show profiles` 能看到 `All User Profile : HTU_Student`）
+2. 那个 SSID **在扫描范围内**（`netsh wlan show networks` 能看到）
+3. 无线网卡开着、WLAN 服务在跑
+
+测试步骤：
+
+1. 先做三项只读确认（不通过就别急着测，脚本也不会做任何猜测）：
+   ```powershell
+   netsh wlan show interfaces   # State 应为 disconnected 或连的是别的 WiFi
+   netsh wlan show networks     # 应能看到 SSID x : HTU_Student
+   netsh wlan show profiles     # 应有 All User Profile : HTU_Student
+   ```
+2. 清掉上一次尝试留下的冷却戳，否则 5 分钟内会被静默跳过（手动跑的戳在用户 TEMP，与 SYSTEM 任务互不干扰）：
+   ```powershell
+   Remove-Item "$env:TEMP\campus_wifi.ts","$env:TEMP\campus_probe.ts" -Force -ErrorAction SilentlyContinue
+   ```
+3. 点右下角 WiFi → **断开** 当前网络（或直接连手机热点再关掉热点）
+4. 盯日志：
+   ```powershell
+   Get-Content E:\06DateClass\auto-login-campus\logs\auto_login.log -Tail 20 -Wait
+   ```
+5. 下一个探测周期内应依次出现：
+   ```
+   [INFO] 检测到 WiFi「HTU_Student」在覆盖范围内（当前未连接无线网络），尝试自动连接...
+   [INFO] netsh wlan connect 返回: 已成功连接到此请求的配置文件...
+   [INFO] 已关联 WiFi「HTU_Student」，等待 DHCP 与 Portal 探测
+   [INFO] 检测到未认证（HTTP 被劫持到认证页），开始自动认证...
+   [INFO] 认证成功！message=...
+   ```
+
+   连上 WiFi 后是同一次运行内接着认证，不用等下一分钟。
+
+失败时的日志含义：
+
+| 日志                                            | 原因                             | 处理                                             |
+| ----------------------------------------------- | -------------------------------- | ------------------------------------------------ |
+| `未保存 WiFi「HTU_Student」的配置文件`        | 系统没有该 WiFi 的 profile       | 手动连一次并勾选"自动连接"                       |
+| `当前扫描不到 WiFi「HTU_Student」`            | 不在覆盖范围 / 网卡关闭          | 走到范围内；任务下次触发会再试                   |
+| `连接 WiFi「HTU_Student」在 30s 内未完成关联` | 关联慢 / 密码错 / 信号差         | 冷却 5 分钟后重试，可调大 `WifiConnectTimeout` |
+| `HTTP 探测失败，但已连接 WiFi「HTU_Student」` | 已连上但 DHCP 未就绪，不重复连接 | 等下一轮即可                                     |
+
 ### 判断标准（三个都满足 = 通过）
 
 - 日志出现 `认证成功！`
 - 浏览器能正常打开网页
 - 远端设备 GameViewer 能连上电脑
 
+场景 5 另加一条（四个都满足 = 通过）：
+
+- 日志出现 `已关联 WiFi「HTU_Student」`，且随后出现 `认证成功！`（只关联成功不算通过，必须连上并认证）
+
+> 场景 5 的两个坑：①手动跑（用户会话）成功**不等于** SYSTEM 任务也成功，最终仍要用 `Start-ScheduledTask -TaskName CampusAutoLogin` 复验；②刚装完任务先重跑一次 `run_install_admin.bat`，否则任务里还留着 `-RunOnlyIfNetworkAvailable`，全断网时根本不会启动。
+
 校园网未认证时有**两类劫持表现**：3xx 跳转到认证页，或直接返回 200/403 + 认证页 HTML（深澜透明劫持；部分 BRAS 用 403 承载认证页）。脚本对两类都识别——只要响应里出现 `portal.do` / `quickauth` / `wlanuserip` 特征，就判定未认证并自动提交；若提不出参数，会主动 GET `portal.do` 兜底，拿不到必要参数则明确报错而不是硬提交。可先跑回归测试确认探测逻辑正常：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File E:\06DateClass\auto-login-campus\scripts\tests\test_captive_detection.ps1
+powershell -ExecutionPolicy Bypass -File E:\06DateClass\auto-login-campus\scripts\tests\test_wifi_autoconnect.ps1
 ```
 
-预期输出：`11 通过, 0 失败`
+预期输出：分别 `11 通过, 0 失败` 与 `17 通过, 0 失败`（后者只喂固定 netsh 文本，不需要真连 WiFi）。
 
 ### 注意事项
 
 - 日志在 `LogMode=heartbeat` 下在线时 30 分钟才写一条心跳（防刷屏），默认 `normal` 每次探测都写一条；**断网瞬间一定会写详细日志**，所以盯日志要在"断开 WiFi 后立刻"看
 - 日志超过 5MB 会自动归档为 `auto_login.log.1`（只保留一份历史），不用担心长期运行把日志撑爆
 - 断开重连后若拿到新 IP（DHCP 重新分配），属正常，脚本会从 302 跳转动态获取新 IP
+- WiFi 自动连接只在"HTTP 探测失败"（完全连不上外网）时才触发；已连着别的能用网络（如手机热点）时脚本判定在线，不会去抢连校园网
+- `install_task.ps1` 已**去掉** `-RunOnlyIfNetworkAvailable`：否则完全断网时任务根本不会启动，"扫到就自动连"永远不会触发。**改动在重装任务后才生效**（管理员重跑 `run_install_admin.bat`）
+- SYSTEM 身份下 `netsh wlan connect` 依赖"所有用户配置文件"（all-user profile）——手动连过一次后默认就是这种，一般可用；若日志里一直提示连不上而用户桌面下能连，可改用 `keepalive_loop.ps1` 在用户登录会话里跑 WiFi 连接
 - 如果日志 1 分钟内没动静，先确认任务计划在跑：
   ```powershell
   Get-ScheduledTaskInfo -TaskName CampusAutoLogin
